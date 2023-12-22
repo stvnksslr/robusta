@@ -10,7 +10,7 @@ except ImportError:
 
 
 from robusta.core.reporting.base import Enrichment, Finding
-from robusta.core.reporting.blocks import JsonBlock, KubernetesDiffBlock
+from robusta.core.reporting.blocks import JsonBlock, KubernetesDiffBlock, TableBlock
 from robusta.core.sinks.kafka.kafka_sink_params import KafkaSinkConfigWrapper
 from robusta.core.sinks.sink_base import SinkBase
 
@@ -28,23 +28,23 @@ class KafkaSink(SinkBase):
     def write_finding(self, finding: Finding, platform_enabled: bool):
         for enrichment in finding.enrichments:
             self.send_enrichment(
+                finding,
                 enrichment,
-                finding.subject.name,
-                finding.subject.subject_type.value,
-                finding.subject.namespace,
             )
 
     def send_enrichment(
         self,
+        finding: Finding,
         enrichment: Enrichment,
-        resource_name: str,
-        resource_type: str,
-        resource_namespace: str,
     ):
         kafka_blocks = [
             block
             for block in enrichment.blocks
-            if (isinstance(block, KubernetesDiffBlock) or isinstance(block, JsonBlock))
+            if (
+                isinstance(block, KubernetesDiffBlock)
+                or isinstance(block, JsonBlock)
+                or isinstance(block, TableBlock)
+            )
         ]
         if not kafka_blocks:  # currently supporting sending kafka sink only diffs
             if len(enrichment.blocks) > 0:
@@ -58,10 +58,10 @@ class KafkaSink(SinkBase):
             if isinstance(block, KubernetesDiffBlock):
                 data = {
                     "cluster_name": self.cluster_name,
-                    "resource_name": resource_name,
-                    "resource_namespace": resource_namespace,
-                    "resource_type": resource_type,
-                    "message": f"{resource_type} properties change",
+                    "resource_name": finding.resource_name,
+                    "resource_namespace": finding.resource_namespace,
+                    "resource_type": finding.resource_type,
+                    "message": f"{finding.resource_type} properties change",
                     "changed_properties": [
                         {
                             "property": ".".join(attribute_diff.path),
@@ -76,5 +76,15 @@ class KafkaSink(SinkBase):
                 json_obj = json.loads(block.json_str)
                 json_obj["cluster_name"] = self.cluster_name
                 message_payload = json.dumps(json_obj).encode("utf-8")
+            elif isinstance(block, TableBlock):
+                data = {
+                    "cluster_name": self.cluster_name,
+                    "resource_name": finding.resource_name,
+                    "resource_namespace": finding.resource_namespace,
+                    "resource_type": finding.resource_type,
+                    "message": finding.title,
+                    "enrichment_properties": dict(block.rows),
+                }
+                message_payload = json.dumps(data).encode("utf-8")
 
             self.producer.send(self.topic, value=message_payload)
